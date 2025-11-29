@@ -543,30 +543,30 @@ def main():
         confidence_threshold=0.5
     )
     
-    # Example 1: Detect in single image
-    print("\n" + "=" * 50)
-    print("Example: Single Image Detection")
-    print("=" * 50)
+    # # Example 1: Detect in single image
+    # print("\n" + "=" * 50)
+    # print("Example: Single Image Detection")
+    # print("=" * 50)
     
-    test_image = "test.jpg"
-    if os.path.exists(test_image):
-        detections = detector.detect_persons(test_image)
+    # test_image = "test.jpg"
+    # if os.path.exists(test_image):
+    #     detections = detector.detect_persons(test_image)
         
-        for det in detections:
-            print(f"\n👤 Person {det.person_id}:")
-            print(f"   Confidence: {det.confidence:.0%}")
-            print(f"   BBox: {det.bbox}")
-            print(f"   Description: {det.description}")
-            if det.attributes.get('action'):
-                print(f"   Action: {det.attributes['action']}")
+    #     for det in detections:
+    #         print(f"\n👤 Person {det.person_id}:")
+    #         print(f"   Confidence: {det.confidence:.0%}")
+    #         print(f"   BBox: {det.bbox}")
+    #         print(f"   Description: {det.description}")
+    #         if det.attributes.get('action'):
+    #             print(f"   Action: {det.attributes['action']}")
         
-        # Draw and save result
-        img = cv2.imread(test_image)
-        output = detector.draw_detections(img, detections)
-        cv2.imwrite("detection_result.jpg", output)
-        print("\n💾 Saved: detection_result.jpg")
-    else:
-        print(f"Test image not found: {test_image}")
+    #     # Draw and save result
+    #     img = cv2.imread(test_image)
+    #     output = detector.draw_detections(img, detections)
+    #     cv2.imwrite("detection_result.jpg", output)
+    #     print("\n💾 Saved: detection_result.jpg")
+    # else:
+    #     print(f"Test image not found: {test_image}")
     
     # Example 2: Detect in video
     print("\n" + "=" * 50)
