@@ -1,12 +1,13 @@
 
-# Requirements generated from imports in server.py and qwen3-vl.py
+# Requirements for AI Detection API
 # - FastAPI for server
 # - Uvicorn for ASGI server
-# - Requests for Ollama HTTP calls
-# - OpenCV, NumPy, Pillow for video/frame processing
+# - Requests for HTTP calls (Ollama, image URLs)
+# - OpenCV, NumPy, Pillow for image/video processing
 # - python-multipart for form/file uploads
-# - aiofiles for async file handling (optional but recommended)
+# - Transformers & Torch for Grounding DINO
 
+# Core server dependencies
 fastapi>=0.95.0
 uvicorn[standard]>=0.22.0
 requests>=2.28.0
@@ -17,6 +18,17 @@ python-multipart>=0.0.6
 aiofiles>=23.1.0
 pydantic>=1.10.7,<2.0.0
 
-# Optional / dev (uncomment if needed)
+# Grounding DINO dependencies
+torch>=2.0.0
+transformers>=4.30.0
+rapidfuzz>=3.0.0
+langdetect>=1.0.9
+matplotlib>=3.7.0
+
+# AIFT (Thai language support) - optional
+# aift>=0.1.0
+
+# Video Action Detection (BLIP) - optional
 # sentence-transformers>=2.2.2
-# torch>=2.0.0
+# scikit-learn>=1.2.0
+# spacy>=3.5.0

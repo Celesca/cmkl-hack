@@ -51,6 +51,22 @@ except Exception as e:
     Qwen3VLActionDetector = None
     logger.error(f"Unexpected error importing Qwen3-VL: {e}")
 
+# Import Grounding DINO object detection model
+try:
+    from model import ModelManager, DynamicGroundingDINO
+    GROUNDING_DINO_AVAILABLE = True
+    logger.info("Grounding DINO model imported successfully")
+except ImportError as e:
+    GROUNDING_DINO_AVAILABLE = False
+    ModelManager = None
+    DynamicGroundingDINO = None
+    logger.warning(f"Grounding DINO model not available: {e}")
+except Exception as e:
+    GROUNDING_DINO_AVAILABLE = False
+    ModelManager = None
+    DynamicGroundingDINO = None
+    logger.error(f"Unexpected error importing Grounding DINO: {e}")
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Video Action Detection API",
@@ -88,6 +104,21 @@ if VIDEO_ACTION_AVAILABLE:
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
         video_action_detector = None
+
+# Global Grounding DINO model manager
+grounding_dino_model = None
+
+if GROUNDING_DINO_AVAILABLE:
+    try:
+        logger.info("Initializing Grounding DINO model manager...")
+        model_manager = ModelManager()
+        grounding_dino_model = model_manager.get_model()
+        logger.info("Grounding DINO model initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Grounding DINO model: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        grounding_dino_model = None
 
 
 # ============================================================================
@@ -148,6 +179,67 @@ class HealthResponse(BaseModel):
     video_action_available: bool
     detector_loaded: bool
     message: str
+
+
+# ============================================================================
+# Grounding DINO Object Detection Pydantic Models
+# ============================================================================
+
+class BoundingBox(BaseModel):
+    """Bounding box coordinates"""
+    x_min: float
+    y_min: float
+    x_max: float
+    y_max: float
+    width: float
+    height: float
+
+
+class Detection(BaseModel):
+    """Single detection result"""
+    id: int
+    label: str
+    confidence: float
+    bounding_box: BoundingBox
+
+
+class ImageSize(BaseModel):
+    """Image dimensions"""
+    width: int
+    height: int
+
+
+class DetectionThresholds(BaseModel):
+    """Detection thresholds"""
+    box_threshold: float
+    text_threshold: float
+
+
+class Visualization(BaseModel):
+    """Visualization data"""
+    image_base64: str
+    format: str
+
+
+class DetectionRequest(BaseModel):
+    """Request model for URL-based detection"""
+    image_url: str = Field(..., description="URL of the image to analyze")
+    text_queries: List[str] = Field(..., description="Text queries for object detection")
+    box_threshold: Optional[float] = Field(0.4, ge=0.0, le=1.0, description="Confidence threshold for bounding boxes")
+    text_threshold: Optional[float] = Field(0.3, ge=0.0, le=1.0, description="Confidence threshold for text matching")
+    return_visualization: Optional[bool] = Field(True, description="Whether to return visualization image")
+
+
+class DetectionResponse(BaseModel):
+    """Response model for detection results"""
+    success: bool
+    num_detections: int
+    detections: List[Detection]
+    image_size: Optional[ImageSize] = None
+    queries: Optional[List[str]] = None
+    thresholds: Optional[DetectionThresholds] = None
+    visualization: Optional[Visualization] = None
+    error: Optional[str] = None
 
 
 # ============================================================================
@@ -297,12 +389,14 @@ async def root():
     status_text = "✅ Ready" if video_action_detector else "❌ Not Available"
     qwen_status = "ok" if QWEN_VL_AVAILABLE else "error"
     qwen_status_text = "✅ Ready" if QWEN_VL_AVAILABLE else "❌ Not Available"
+    dino_status = "ok" if grounding_dino_model else "error"
+    dino_status_text = "✅ Ready" if grounding_dino_model else "❌ Not Available"
     
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Video Action Detection API</title>
+        <title>AI Detection API</title>
         <style>
             body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
             .container {{ max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
@@ -310,8 +404,10 @@ async def root():
             h2 {{ color: #333; margin-top: 30px; }}
             .endpoint {{ margin: 20px 0; padding: 15px; border-left: 4px solid #007acc; background: #f8f9fa; }}
             .endpoint-qwen {{ border-left-color: #8b5cf6; }}
+            .endpoint-dino {{ border-left-color: #10b981; }}
             .method {{ font-weight: bold; color: #007acc; }}
             .method-qwen {{ color: #8b5cf6; }}
+            .method-dino {{ color: #10b981; }}
             .status {{ padding: 10px; border-radius: 5px; margin: 15px 0; display: inline-block; margin-right: 10px; }}
             .status-ok {{ background: #d4edda; border: 1px solid #c3e6cb; color: #155724; }}
             .status-error {{ background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; }}
@@ -322,10 +418,13 @@ async def root():
     </head>
     <body>
         <div class="container">
-            <h1>🎬 Video Action Detection API</h1>
-            <p>Detect actions in videos using multiple AI models</p>
+            <h1>🔍 AI Detection API</h1>
+            <p>Object detection and video action recognition using multiple AI models</p>
             
             <div class="models-row">
+                <div class="status status-{dino_status}">
+                    <strong>Grounding DINO:</strong> {dino_status_text}
+                </div>
                 <div class="status status-{detector_status}">
                     <strong>BLIP Detector:</strong> {status_text}
                 </div>
@@ -334,8 +433,26 @@ async def root():
                 </div>
             </div>
             
+            <h2>🎯 Grounding DINO Object Detection</h2>
+            <p>Zero-shot object detection with text-guided queries</p>
+            
+            <div class="endpoint endpoint-dino">
+                <span class="method method-dino">POST</span> <strong>/detect</strong>
+                <p>Detect objects in image from URL</p>
+            </div>
+            
+            <div class="endpoint endpoint-dino">
+                <span class="method method-dino">POST</span> <strong>/detect/upload</strong>
+                <p>Detect objects in uploaded image file</p>
+            </div>
+            
+            <div class="endpoint endpoint-dino">
+                <span class="method method-dino">GET</span> <strong>/detect/status</strong>
+                <p>Get Grounding DINO system status</p>
+            </div>
+            
             <h2>🧠 BLIP + Sentence Transformers Endpoints</h2>
-            <p>Traditional action detection using BLIP image captioning and semantic similarity</p>
+            <p>Video action detection using BLIP image captioning and semantic similarity</p>
             
             <div class="endpoint">
                 <span class="method">POST</span> <strong>/video_action/detect</strong>
@@ -385,20 +502,25 @@ async def root():
             
             <h3>🚀 Quick Start</h3>
             
-            <h4>Using BLIP Detector:</h4>
+            <h4>Object Detection (Grounding DINO):</h4>
+            <pre>curl -X POST "http://localhost:8000/detect" \\
+     -H "Content-Type: application/json" \\
+     -d '{{"image_url": "https://example.com/image.jpg", "text_queries": ["person", "car", "dog"]}}'</pre>
+            
+            <h4>Object Detection (Upload):</h4>
+            <pre>curl -X POST "http://localhost:8000/detect/upload" \\
+     -F "file=@your_image.jpg" \\
+     -F "text_queries=person, car, dog"</pre>
+            
+            <h4>Video Action Detection (BLIP):</h4>
             <pre>curl -X POST "http://localhost:8000/video_action/detect/upload" \\
      -F "file=@your_video.mp4" \\
      -F "prompt=person running"</pre>
             
-            <h4>Using Qwen3-VL (Ollama):</h4>
+            <h4>Video Action Detection (Qwen3-VL):</h4>
             <pre>curl -X POST "http://localhost:8000/qwen/detect/upload" \\
      -F "file=@your_video.mp4" \\
      -F "action_prompt=running"</pre>
-            
-            <h4>Qwen3-VL from URL:</h4>
-            <pre>curl -X POST "http://localhost:8000/qwen/detect" \\
-     -H "Content-Type: application/json" \\
-     -d '{{"video_url": "https://example.com/video.mp4", "action_prompt": "running"}}'</pre>
         </div>
     </body>
     </html>
@@ -865,6 +987,200 @@ async def get_qwen_status():
             "custom_action_prompts": True,
             "adjustable_confidence": True
         }
+    }
+
+
+# ============================================================================
+# Grounding DINO Object Detection Endpoints
+# ============================================================================
+
+@app.post("/detect", response_model=DetectionResponse)
+async def detect_objects_from_url(request: DetectionRequest):
+    """
+    Detect objects in image from URL using Grounding DINO
+    
+    - **image_url**: URL of the image to analyze
+    - **text_queries**: List of text descriptions of objects to detect
+    - **box_threshold**: Confidence threshold for bounding boxes (0.0 to 1.0)
+    - **text_threshold**: Confidence threshold for text matching (0.0 to 1.0)
+    - **return_visualization**: Whether to return visualization image as base64
+    """
+    if not GROUNDING_DINO_AVAILABLE or grounding_dino_model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Grounding DINO model is not available. Check model.py module."
+        )
+    
+    try:
+        # Process detection
+        result = grounding_dino_model.process_detection(
+            image_source=request.image_url,
+            text_queries=request.text_queries,
+            box_threshold=request.box_threshold,
+            text_threshold=request.text_threshold,
+            return_visualization=request.return_visualization
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("error", "Detection failed")
+            )
+        
+        # Convert to response format
+        detections = []
+        for det in result.get("detections", []):
+            detections.append(Detection(
+                id=det["id"],
+                label=det["label"],
+                confidence=det["confidence"],
+                bounding_box=BoundingBox(**det["bounding_box"])
+            ))
+        
+        response_data = DetectionResponse(
+            success=True,
+            num_detections=result["num_detections"],
+            detections=detections,
+            image_size=ImageSize(**result["image_size"]) if result.get("image_size") else None,
+            queries=result.get("queries"),
+            thresholds=DetectionThresholds(**result["thresholds"]) if result.get("thresholds") else None,
+            visualization=Visualization(**result["visualization"]) if result.get("visualization") else None
+        )
+        
+        logger.info(f"Object detection completed. Found {result['num_detections']} objects.")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Object detection failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Object detection failed: {str(e)}"
+        )
+
+
+@app.post("/detect/upload", response_model=DetectionResponse)
+async def detect_objects_from_upload(
+    file: UploadFile = File(..., description="Image file to analyze"),
+    text_queries: str = Form(..., description="Comma-separated text queries for object detection"),
+    box_threshold: float = Form(0.4, description="Confidence threshold for bounding boxes"),
+    text_threshold: float = Form(0.3, description="Confidence threshold for text matching"),
+    return_visualization: bool = Form(True, description="Whether to return visualization image")
+):
+    """
+    Detect objects in uploaded image file using Grounding DINO
+    
+    - **file**: Image file (JPEG, PNG, etc.)
+    - **text_queries**: Comma-separated text descriptions of objects to detect
+    - **box_threshold**: Confidence threshold for bounding boxes (0.0 to 1.0)
+    - **text_threshold**: Confidence threshold for text matching (0.0 to 1.0)
+    - **return_visualization**: Whether to return visualization image as base64
+    """
+    if not GROUNDING_DINO_AVAILABLE or grounding_dino_model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Grounding DINO model is not available. Check model.py module."
+        )
+    
+    try:
+        # Validate file type
+        if not file.content_type or not file.content_type.startswith('image/'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File must be an image"
+            )
+        
+        # Read image file
+        contents = await file.read()
+        
+        # Parse text queries
+        queries_list = [q.strip() for q in text_queries.split(",") if q.strip()]
+        if not queries_list:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one text query is required"
+            )
+        
+        # Validate thresholds
+        if not (0.0 <= box_threshold <= 1.0):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="box_threshold must be between 0.0 and 1.0"
+            )
+        
+        if not (0.0 <= text_threshold <= 1.0):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="text_threshold must be between 0.0 and 1.0"
+            )
+        
+        # Process detection
+        result = grounding_dino_model.process_detection(
+            image_source=contents,
+            text_queries=queries_list,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            return_visualization=return_visualization
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("error", "Detection failed")
+            )
+        
+        # Convert to response format
+        detections = []
+        for det in result.get("detections", []):
+            detections.append(Detection(
+                id=det["id"],
+                label=det["label"],
+                confidence=det["confidence"],
+                bounding_box=BoundingBox(**det["bounding_box"])
+            ))
+        
+        response_data = DetectionResponse(
+            success=True,
+            num_detections=result["num_detections"],
+            detections=detections,
+            image_size=ImageSize(**result["image_size"]) if result.get("image_size") else None,
+            queries=result.get("queries"),
+            thresholds=DetectionThresholds(**result["thresholds"]) if result.get("thresholds") else None,
+            visualization=Visualization(**result["visualization"]) if result.get("visualization") else None
+        )
+        
+        logger.info(f"Object detection completed. Found {result['num_detections']} objects.")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Upload object detection failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Object detection failed: {str(e)}"
+        )
+
+
+@app.get("/detect/status")
+async def get_detect_status():
+    """Get Grounding DINO object detection system status"""
+    return {
+        "grounding_dino_available": GROUNDING_DINO_AVAILABLE,
+        "model_loaded": grounding_dino_model is not None,
+        "supported_formats": ["jpg", "jpeg", "png", "webp", "bmp"],
+        "features": {
+            "zero_shot_detection": True,
+            "text_guided_detection": True,
+            "bounding_boxes": True,
+            "visualization": True,
+            "thai_language_support": True
+        },
+        "model_info": {
+            "model_id": "rziga/mm_grounding_dino_large_all",
+            "device": grounding_dino_model.device if grounding_dino_model else None
+        } if GROUNDING_DINO_AVAILABLE else None
     }
 
 
