@@ -1,0 +1,22 @@
+
+# Requirements generated from imports in server.py and qwen3-vl.py
+# - FastAPI for server
+# - Uvicorn for ASGI server
+# - Requests for Ollama HTTP calls
+# - OpenCV, NumPy, Pillow for video/frame processing
+# - python-multipart for form/file uploads
+# - aiofiles for async file handling (optional but recommended)
+
+fastapi>=0.95.0
+uvicorn[standard]>=0.22.0
+requests>=2.28.0
+numpy>=1.24.0
+opencv-python-headless>=4.7.0
+Pillow>=9.5.0
+python-multipart>=0.0.6
+aiofiles>=23.1.0
+pydantic>=1.10.7,<2.0.0
+
+# Optional / dev (uncomment if needed)
+# sentence-transformers>=2.2.2
+# torch>=2.0.0
