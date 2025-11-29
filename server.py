@@ -67,6 +67,20 @@ except Exception as e:
     DynamicGroundingDINO = None
     logger.error(f"Unexpected error importing Grounding DINO: {e}")
 
+# Import Factory Alert Engine
+try:
+    from factory_alert_engine import FactoryAlertEngine, FactoryAlert, AnalysisResult
+    FACTORY_ALERT_AVAILABLE = True
+    logger.info("Factory Alert Engine imported successfully")
+except ImportError as e:
+    FACTORY_ALERT_AVAILABLE = False
+    FactoryAlertEngine = None
+    logger.warning(f"Factory Alert Engine not available: {e}")
+except Exception as e:
+    FACTORY_ALERT_AVAILABLE = False
+    FactoryAlertEngine = None
+    logger.error(f"Unexpected error importing Factory Alert Engine: {e}")
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Video Action Detection API",
@@ -391,6 +405,8 @@ async def root():
     qwen_status_text = "✅ Ready" if QWEN_VL_AVAILABLE else "❌ Not Available"
     dino_status = "ok" if grounding_dino_model else "error"
     dino_status_text = "✅ Ready" if grounding_dino_model else "❌ Not Available"
+    factory_status = "ok" if FACTORY_ALERT_AVAILABLE else "error"
+    factory_status_text = "✅ Ready" if FACTORY_ALERT_AVAILABLE else "❌ Not Available"
     
     html_content = f"""
     <!DOCTYPE html>
@@ -430,6 +446,9 @@ async def root():
                 </div>
                 <div class="status status-{qwen_status}">
                     <strong>Qwen3-VL (Ollama):</strong> {qwen_status_text}
+                </div>
+                <div class="status status-{factory_status}">
+                    <strong>Factory Alert Engine:</strong> {factory_status_text}
                 </div>
             </div>
             
@@ -487,6 +506,19 @@ async def root():
                 <p>Get Qwen3-VL and Ollama status</p>
             </div>
             
+            <h2>🏭 Factory Alert Engine Endpoints</h2>
+            <p>Smart factory video analysis with safety, efficiency, quality, and compliance alerts</p>
+            
+            <div class="endpoint" style="border-left-color: #f59e0b;">
+                <span class="method" style="color: #f59e0b;">POST</span> <strong>/factory/alerts/detect/upload</strong>
+                <p>Analyze factory video and generate structured alerts</p>
+            </div>
+            
+            <div class="endpoint" style="border-left-color: #f59e0b;">
+                <span class="method" style="color: #f59e0b;">GET</span> <strong>/factory/alerts/status</strong>
+                <p>Get Factory Alert Engine status</p>
+            </div>
+            
             <h2>🔧 System Endpoints</h2>
             
             <div class="endpoint">
@@ -521,6 +553,12 @@ async def root():
             <pre>curl -X POST "http://localhost:8000/qwen/detect/upload" \\
      -F "file=@your_video.mp4" \\
      -F "action_prompt=running"</pre>
+            
+            <h4>Factory Alert Detection:</h4>
+            <pre>curl -X POST "http://localhost:8000/factory/alerts/detect/upload" \\
+     -F "file=@factory_video.mp4" \\
+     -F "zones=zone_a,zone_b" \\
+     -F "alert_types=safety,efficiency,quality"</pre>
         </div>
     </body>
     </html>
@@ -1181,6 +1219,286 @@ async def get_detect_status():
             "model_id": "rziga/mm_grounding_dino_large_all",
             "device": grounding_dino_model.device if grounding_dino_model else None
         } if GROUNDING_DINO_AVAILABLE else None
+    }
+
+
+# ============================================================================
+# Factory Alert Detection Endpoints
+# ============================================================================
+
+class FactoryAlertModel(BaseModel):
+    """Factory alert model for API response"""
+    alert_id: str
+    alert_type: str
+    severity: str
+    zone_id: str
+    title: str
+    description: str
+    person_count: int
+    action_detected: str
+    confidence: float
+    detected_at: str
+    frame_timestamp: float
+    recommended_action: str
+    metadata: Dict[str, Any] = {}
+
+
+class FactoryAnalysisSummary(BaseModel):
+    """Summary of factory analysis"""
+    total_frames: int
+    frames_analyzed: int
+    average_person_count: float
+    action_distribution: Dict[str, int]
+    alert_counts: Dict[str, int]
+    critical_alerts: int
+    high_alerts: int
+    medium_alerts: int
+    low_alerts: int
+
+
+class FactoryAnalysisRequest(BaseModel):
+    """Request model for factory video analysis"""
+    video_url: str = Field(..., description="URL of the video to analyze")
+    zone_id: Optional[str] = Field("default_zone", description="Zone identifier for alerts")
+    actions_to_detect: Optional[List[str]] = Field(
+        None, 
+        description="Specific actions to detect: running, idle, falling, fighting, sleeping, working, standing, sitting"
+    )
+    confidence_threshold: Optional[float] = Field(0.5, ge=0.0, le=1.0, description="Minimum confidence for alerts")
+    frame_sample_rate: Optional[int] = Field(1, ge=1, le=10, description="Frames to analyze per second")
+    person_count_threshold: Optional[int] = Field(5, ge=1, description="Max persons before crowding alert")
+    ollama_url: Optional[str] = Field("http://localhost:11434", description="Ollama API URL")
+    model_name: Optional[str] = Field("qwen2.5-vl", description="Qwen VL model name")
+
+
+class FactoryAnalysisResponse(BaseModel):
+    """Response model for factory video analysis"""
+    success: bool
+    job_id: str
+    video_duration: float
+    frames_analyzed: int
+    total_persons_detected: int
+    alerts: List[FactoryAlertModel]
+    summary: FactoryAnalysisSummary
+    timestamp: str
+    error: Optional[str] = None
+
+
+@app.post("/factory/analyze", response_model=FactoryAnalysisResponse)
+async def analyze_factory_video_from_url(request: FactoryAnalysisRequest):
+    """
+    Analyze factory video and generate structured alerts
+    
+    - **video_url**: URL of the video to analyze
+    - **zone_id**: Zone identifier for alerts (e.g., 'assembly_line_1', 'warehouse_a')
+    - **actions_to_detect**: List of actions to look for (running, idle, falling, etc.)
+    - **confidence_threshold**: Minimum confidence to generate alerts
+    - **frame_sample_rate**: Frames to analyze per second (1-10)
+    - **person_count_threshold**: Max persons before generating crowding alert
+    """
+    if not FACTORY_ALERT_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Factory Alert Engine is not available. Check factory_alert_engine.py module."
+        )
+    
+    temp_video_path = None
+    try:
+        # Download video from URL
+        logger.info(f"Downloading video from URL: {request.video_url}")
+        temp_video_path, video_info = download_video_from_url(request.video_url)
+        logger.info(f"Video downloaded: {video_info.get('title', 'Unknown')}")
+        
+        # Create Factory Alert Engine
+        engine = FactoryAlertEngine(
+            ollama_url=request.ollama_url,
+            model_name=request.model_name,
+            confidence_threshold=request.confidence_threshold,
+            frame_sample_rate=request.frame_sample_rate,
+            person_count_threshold=request.person_count_threshold,
+            zone_id=request.zone_id
+        )
+        
+        # Analyze video
+        result = engine.analyze_video(
+            video_path=temp_video_path,
+            zone_id=request.zone_id,
+            actions_to_detect=request.actions_to_detect
+        )
+        
+        # Clean up temporary file
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        
+        # Convert to response format
+        from dataclasses import asdict
+        
+        alerts = [FactoryAlertModel(**asdict(a)) for a in result.alerts]
+        summary = FactoryAnalysisSummary(**result.summary)
+        
+        response_data = FactoryAnalysisResponse(
+            success=True,
+            job_id=result.job_id,
+            video_duration=result.video_duration,
+            frames_analyzed=result.frames_analyzed,
+            total_persons_detected=result.total_persons_detected,
+            alerts=alerts,
+            summary=summary,
+            timestamp=result.timestamp
+        )
+        
+        logger.info(f"Factory analysis completed. Job ID: {result.job_id}, Alerts: {len(alerts)}")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Factory analysis failed: {e}")
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Factory analysis failed: {str(e)}"
+        )
+
+
+@app.post("/factory/analyze/upload", response_model=FactoryAnalysisResponse)
+async def analyze_factory_video_from_upload(
+    file: UploadFile = File(..., description="Video file to analyze"),
+    zone_id: str = Form("default_zone", description="Zone identifier for alerts"),
+    actions_to_detect: str = Form(
+        "", 
+        description="Comma-separated actions to detect: running, idle, falling, fighting, sleeping, working"
+    ),
+    confidence_threshold: float = Form(0.5, description="Minimum confidence for alerts"),
+    frame_sample_rate: int = Form(1, description="Frames to analyze per second"),
+    person_count_threshold: int = Form(5, description="Max persons before crowding alert"),
+    ollama_url: str = Form("http://localhost:11434", description="Ollama API URL"),
+    model_name: str = Form("qwen2.5-vl", description="Qwen VL model name")
+):
+    """
+    Analyze uploaded factory video and generate structured alerts
+    
+    Returns structured JSON alerts for:
+    - Safety alerts (running, falling, fighting)
+    - Efficiency alerts (idle, working patterns)
+    - Capacity alerts (overcrowding)
+    - Compliance alerts (sleeping, violations)
+    """
+    if not FACTORY_ALERT_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Factory Alert Engine is not available. Check factory_alert_engine.py module."
+        )
+    
+    temp_video_path = None
+    try:
+        # Validate file type
+        if not file.content_type or not file.content_type.startswith('video/'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File must be a video"
+            )
+        
+        # Parse actions to detect
+        if actions_to_detect.strip():
+            actions_list = [a.strip() for a in actions_to_detect.split(",") if a.strip()]
+        else:
+            actions_list = None  # Detect all actions
+        
+        # Save uploaded file to temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
+            temp_video_path = temp_file.name
+            contents = await file.read()
+            temp_file.write(contents)
+            temp_file.flush()
+        
+        logger.info(f"Video uploaded and saved to: {temp_video_path}")
+        
+        # Create Factory Alert Engine
+        engine = FactoryAlertEngine(
+            ollama_url=ollama_url,
+            model_name=model_name,
+            confidence_threshold=confidence_threshold,
+            frame_sample_rate=frame_sample_rate,
+            person_count_threshold=person_count_threshold,
+            zone_id=zone_id
+        )
+        
+        # Analyze video
+        result = engine.analyze_video(
+            video_path=temp_video_path,
+            zone_id=zone_id,
+            actions_to_detect=actions_list
+        )
+        
+        # Clean up temporary file
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        
+        # Convert to response format
+        from dataclasses import asdict
+        
+        alerts = [FactoryAlertModel(**asdict(a)) for a in result.alerts]
+        summary = FactoryAnalysisSummary(**result.summary)
+        
+        response_data = FactoryAnalysisResponse(
+            success=True,
+            job_id=result.job_id,
+            video_duration=result.video_duration,
+            frames_analyzed=result.frames_analyzed,
+            total_persons_detected=result.total_persons_detected,
+            alerts=alerts,
+            summary=summary,
+            timestamp=result.timestamp
+        )
+        
+        logger.info(f"Factory analysis completed. Job ID: {result.job_id}, Alerts: {len(alerts)}")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Factory upload analysis failed: {e}")
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Factory analysis failed: {str(e)}"
+        )
+
+
+@app.get("/factory/status")
+async def get_factory_status():
+    """Get Factory Alert Engine status"""
+    ollama_status = "unknown"
+    available_models = []
+    
+    # Check Ollama connection
+    try:
+        response = requests.get("http://localhost:11434/api/tags", timeout=5)
+        if response.status_code == 200:
+            ollama_status = "connected"
+            models = response.json().get('models', [])
+            available_models = [m.get('name', '') for m in models]
+        else:
+            ollama_status = "error"
+    except requests.exceptions.ConnectionError:
+        ollama_status = "disconnected"
+    except Exception as e:
+        ollama_status = f"error: {str(e)}"
+    
+    return {
+        "factory_alert_available": FACTORY_ALERT_AVAILABLE,
+        "ollama_status": ollama_status,
+        "available_models": available_models,
+        "supported_actions": [
+            "running", "falling", "idle", "standing", "sitting", 
+            "fighting", "sleeping", "working", "crowded"
+        ],
+        "alert_types": ["safety", "efficiency", "quality", "capacity", "compliance", "maintenance"],
+        "severity_levels": ["critical", "high", "medium", "low"],
+        "supported_formats": ["mp4", "avi", "mov", "mkv", "webm"]
     }
 
 
