@@ -264,7 +264,9 @@ class YOLOPersonCounter:
         output_video: bool = True,
         frame_sample_rate: int = 1,
         output_format: str = "mp4",
-        return_base64: bool = False
+        return_base64: bool = False,
+        output_dir: str = None,
+        output_filename: str = None
     ) -> CountingResult:
         """
         Process video and count persons in each frame
@@ -275,6 +277,8 @@ class YOLOPersonCounter:
             frame_sample_rate: Process every Nth frame (1 = all frames)
             output_format: Output video format
             return_base64: Whether to return video as base64
+            output_dir: Custom output directory for video (None = temp dir)
+            output_filename: Custom output filename (None = auto-generated)
             
         Returns:
             CountingResult with all counting data
@@ -300,11 +304,27 @@ class YOLOPersonCounter:
         writer = None
         
         if output_video:
-            # Create temporary output file
             suffix = f".{output_format}"
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            output_path = temp_file.name
-            temp_file.close()
+            
+            # Use custom output directory if provided
+            if output_dir:
+                # Ensure directory exists
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Generate filename if not provided
+                if output_filename:
+                    filename = output_filename if output_filename.endswith(suffix) else f"{output_filename}{suffix}"
+                else:
+                    from datetime import datetime
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f"person_count_{timestamp}{suffix}"
+                
+                output_path = os.path.join(output_dir, filename)
+            else:
+                # Create temporary output file
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+                output_path = temp_file.name
+                temp_file.close()
             
             # Use mp4v codec for MP4
             if output_format.lower() == "mp4":

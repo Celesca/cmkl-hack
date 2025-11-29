@@ -1171,12 +1171,19 @@ async def count_persons_from_url(request: PersonCountRequest):
                 detail="Failed to initialize YOLO counter"
             )
         
+        # Define output directory for frontend public folder
+        output_dir = r"C:\Users\Sawit\Desktop\cmkl-website\cmkl-frontend\public\videos"
+        job_id = f"yolo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        output_filename = f"person_count_{job_id}.mp4"
+        
         # Process video
         result = counter.process_video(
             video_path=temp_video_path,
             output_video=request.return_video,
             frame_sample_rate=request.frame_sample_rate,
-            return_base64=request.return_base64
+            return_base64=request.return_base64,
+            output_dir=output_dir,
+            output_filename=output_filename
         )
         
         # Clean up input video
@@ -1219,7 +1226,8 @@ async def count_persons_from_url(request: PersonCountRequest):
                     detections=detections
                 ))
         
-        job_id = f"yolo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Generate web-accessible video URL (for frontend)
+        video_web_url = f"/videos/{output_filename}" if result.output_video_path else None
         
         response_data = PersonCountResponse(
             success=True,
@@ -1239,7 +1247,7 @@ async def count_persons_from_url(request: PersonCountRequest):
             },
             timeline=timeline,
             frame_counts=frame_counts,
-            output_video_path=result.output_video_path,
+            output_video_path=video_web_url,  # Return web-accessible path
             output_video_base64=result.output_video_base64
         )
         
@@ -1312,12 +1320,19 @@ async def count_persons_from_upload(
                 detail="Failed to initialize YOLO counter"
             )
         
+        # Define output directory for frontend public folder
+        output_dir = r"C:\Users\Sawit\Desktop\cmkl-website\cmkl-frontend\public\videos"
+        job_id = f"yolo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        output_filename = f"person_count_{job_id}.mp4"
+        
         # Process video
         result = counter.process_video(
             video_path=temp_video_path,
             output_video=return_video,
             frame_sample_rate=frame_sample_rate,
-            return_base64=return_base64
+            return_base64=return_base64,
+            output_dir=output_dir,
+            output_filename=output_filename
         )
         
         # Clean up input video
@@ -1360,7 +1375,8 @@ async def count_persons_from_upload(
                     detections=detections
                 ))
         
-        job_id = f"yolo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Generate web-accessible video URL (for frontend)
+        video_web_url = f"/videos/{output_filename}" if result.output_video_path else None
         
         response_data = PersonCountResponse(
             success=True,
@@ -1380,7 +1396,7 @@ async def count_persons_from_upload(
             },
             timeline=timeline,
             frame_counts=frame_counts,
-            output_video_path=result.output_video_path,
+            output_video_path=video_web_url,  # Return web-accessible path
             output_video_base64=result.output_video_base64
         )
         
