@@ -539,7 +539,7 @@ def main():
     # Initialize detector
     detector = Qwen3VLPersonDetector(
         ollama_url="http://localhost:11434",
-        model_name="qwen2.5-vl",
+        model_name="qwen3-vl",
         confidence_threshold=0.5
     )
     
