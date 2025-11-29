@@ -6,6 +6,7 @@
 # - OpenCV, NumPy, Pillow for image/video processing
 # - python-multipart for form/file uploads
 # - Transformers & Torch for Grounding DINO
+# - Ultralytics for YOLOv8
 
 # Core server dependencies
 fastapi>=0.95.0
@@ -24,6 +25,9 @@ transformers>=4.30.0
 rapidfuzz>=3.0.0
 langdetect>=1.0.9
 matplotlib>=3.7.0
+
+# YOLO Person Counting
+ultralytics>=8.0.0
 
 # AIFT (Thai language support) - optional
 # aift>=0.1.0

@@ -81,6 +81,21 @@ except Exception as e:
     FactoryAlertEngine = None
     logger.error(f"Unexpected error importing Factory Alert Engine: {e}")
 
+# Import YOLO Person Counter
+try:
+    from yolo_person_counter import YOLOPersonCounter, get_yolo_counter, YOLO_AVAILABLE
+    logger.info("YOLO Person Counter imported successfully")
+except ImportError as e:
+    YOLO_AVAILABLE = False
+    YOLOPersonCounter = None
+    get_yolo_counter = None
+    logger.warning(f"YOLO Person Counter not available: {e}")
+except Exception as e:
+    YOLO_AVAILABLE = False
+    YOLOPersonCounter = None
+    get_yolo_counter = None
+    logger.error(f"Unexpected error importing YOLO Person Counter: {e}")
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Video Action Detection API",
@@ -303,6 +318,69 @@ class QwenActionResponse(BaseModel):
 
 
 # ============================================================================
+# YOLO Person Counting Pydantic Models
+# ============================================================================
+
+class PersonBoundingBox(BaseModel):
+    """Bounding box for detected person"""
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    center_x: int
+    center_y: int
+
+
+class PersonDetectionResult(BaseModel):
+    """Single person detection"""
+    person_id: int
+    confidence: float
+    bounding_box: PersonBoundingBox
+
+
+class FramePersonCount(BaseModel):
+    """Person count for a single frame"""
+    frame_idx: int
+    timestamp: float
+    person_count: int
+    detections: List[PersonDetectionResult]
+
+
+class PersonCountTimeline(BaseModel):
+    """Timeline data for person counting"""
+    timestamps: List[float]
+    counts: List[int]
+    max_count: int
+    min_count: int
+    avg_count: float
+    duration: float
+
+
+class PersonCountRequest(BaseModel):
+    """Request for person counting from URL"""
+    video_url: str = Field(..., description="URL of the video to analyze")
+    confidence_threshold: Optional[float] = Field(0.5, ge=0.0, le=1.0, description="YOLO detection confidence threshold")
+    frame_sample_rate: Optional[int] = Field(1, ge=1, le=30, description="Process every Nth frame")
+    return_video: Optional[bool] = Field(True, description="Whether to return annotated video")
+    return_base64: Optional[bool] = Field(False, description="Return video as base64 instead of file path")
+
+
+class PersonCountResponse(BaseModel):
+    """Response for person counting"""
+    success: bool
+    job_id: str
+    video_path: Optional[str] = None
+    timestamp: str
+    video_info: Dict[str, Any]
+    statistics: Dict[str, Any]
+    timeline: Optional[PersonCountTimeline] = None
+    frame_counts: Optional[List[FramePersonCount]] = None
+    output_video_path: Optional[str] = None
+    output_video_base64: Optional[str] = None
+    error: Optional[str] = None
+
+
+# ============================================================================
 # Helper Functions
 # ============================================================================
 
@@ -407,6 +485,8 @@ async def root():
     dino_status_text = "✅ Ready" if grounding_dino_model else "❌ Not Available"
     factory_status = "ok" if FACTORY_ALERT_AVAILABLE else "error"
     factory_status_text = "✅ Ready" if FACTORY_ALERT_AVAILABLE else "❌ Not Available"
+    yolo_status = "ok" if YOLO_AVAILABLE else "error"
+    yolo_status_text = "✅ Ready" if YOLO_AVAILABLE else "❌ Not Available"
     
     html_content = f"""
     <!DOCTYPE html>
@@ -446,6 +526,9 @@ async def root():
                 </div>
                 <div class="status status-{qwen_status}">
                     <strong>Qwen3-VL (Ollama):</strong> {qwen_status_text}
+                </div>
+                <div class="status status-{yolo_status}">
+                    <strong>YOLOv8 Counter:</strong> {yolo_status_text}
                 </div>
                 <div class="status status-{factory_status}">
                     <strong>Factory Alert Engine:</strong> {factory_status_text}
@@ -506,6 +589,24 @@ async def root():
                 <p>Get Qwen3-VL and Ollama status</p>
             </div>
             
+            <h2>👥 YOLO Person Counting Endpoints</h2>
+            <p>Fast person detection and counting using YOLOv8 nano with annotated video output</p>
+            
+            <div class="endpoint" style="border-left-color: #ef4444;">
+                <span class="method" style="color: #ef4444;">POST</span> <strong>/person_count/detect</strong>
+                <p>Count persons in video from URL</p>
+            </div>
+            
+            <div class="endpoint" style="border-left-color: #ef4444;">
+                <span class="method" style="color: #ef4444;">POST</span> <strong>/person_count/upload</strong>
+                <p>Count persons in uploaded video file</p>
+            </div>
+            
+            <div class="endpoint" style="border-left-color: #ef4444;">
+                <span class="method" style="color: #ef4444;">GET</span> <strong>/person_count/status</strong>
+                <p>Get YOLO person counting status</p>
+            </div>
+            
             <h2>🏭 Factory Alert Engine Endpoints</h2>
             <p>Smart factory video analysis with safety, efficiency, quality, and compliance alerts</p>
             
@@ -553,6 +654,12 @@ async def root():
             <pre>curl -X POST "http://localhost:8000/qwen/detect/upload" \\
      -F "file=@your_video.mp4" \\
      -F "action_prompt=running"</pre>
+            
+            <h4>Person Counting (YOLO):</h4>
+            <pre>curl -X POST "http://localhost:8000/person_count/upload" \\
+     -F "file=@your_video.mp4" \\
+     -F "confidence_threshold=0.5" \\
+     -F "return_video=true"</pre>
             
             <h4>Factory Alert Detection:</h4>
             <pre>curl -X POST "http://localhost:8000/factory/alerts/detect/upload" \\
@@ -1024,6 +1131,292 @@ async def get_qwen_status():
             "temporal_segmentation": True,
             "custom_action_prompts": True,
             "adjustable_confidence": True
+        }
+    }
+
+
+# ============================================================================
+# YOLO Person Counting Endpoints
+# ============================================================================
+
+@app.post("/person_count/detect", response_model=PersonCountResponse)
+async def count_persons_from_url(request: PersonCountRequest):
+    """
+    Count persons in video from URL using YOLO
+    
+    - **video_url**: URL of the video to analyze (direct URLs only)
+    - **confidence_threshold**: YOLO detection confidence (0.0-1.0)
+    - **frame_sample_rate**: Process every Nth frame
+    - **return_video**: Whether to generate annotated output video
+    - **return_base64**: Return video as base64 string
+    """
+    if not YOLO_AVAILABLE or get_yolo_counter is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="YOLO Person Counter is not available. Install with: pip install ultralytics"
+        )
+    
+    temp_video_path = None
+    try:
+        # Download video from URL
+        logger.info(f"Downloading video from URL: {request.video_url}")
+        temp_video_path, video_info = download_video_from_url(request.video_url)
+        logger.info(f"Video downloaded: {video_info.get('title', 'Unknown')}")
+        
+        # Get YOLO counter
+        counter = get_yolo_counter(confidence_threshold=request.confidence_threshold)
+        if counter is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to initialize YOLO counter"
+            )
+        
+        # Process video
+        result = counter.process_video(
+            video_path=temp_video_path,
+            output_video=request.return_video,
+            frame_sample_rate=request.frame_sample_rate,
+            return_base64=request.return_base64
+        )
+        
+        # Clean up input video
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        
+        # Build timeline
+        timeline = PersonCountTimeline(
+            timestamps=[fc.timestamp for fc in result.frame_counts],
+            counts=[fc.person_count for fc in result.frame_counts],
+            max_count=result.max_persons,
+            min_count=result.min_persons,
+            avg_count=result.avg_persons,
+            duration=result.duration
+        )
+        
+        # Build frame counts (limit to avoid huge responses)
+        frame_counts = []
+        sample_interval = max(1, len(result.frame_counts) // 100)  # Max 100 frames in response
+        for i, fc in enumerate(result.frame_counts):
+            if i % sample_interval == 0:
+                detections = []
+                for det in fc.detections:
+                    detections.append(PersonDetectionResult(
+                        person_id=det.person_id,
+                        confidence=det.confidence,
+                        bounding_box=PersonBoundingBox(
+                            x1=det.bbox[0],
+                            y1=det.bbox[1],
+                            x2=det.bbox[2],
+                            y2=det.bbox[3],
+                            center_x=det.center[0],
+                            center_y=det.center[1]
+                        )
+                    ))
+                frame_counts.append(FramePersonCount(
+                    frame_idx=fc.frame_idx,
+                    timestamp=fc.timestamp,
+                    person_count=fc.person_count,
+                    detections=detections
+                ))
+        
+        job_id = f"yolo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        response_data = PersonCountResponse(
+            success=True,
+            job_id=job_id,
+            video_path=request.video_url,
+            timestamp=datetime.now().isoformat(),
+            video_info={
+                "total_frames": result.total_frames,
+                "fps": result.fps,
+                "duration": result.duration
+            },
+            statistics={
+                "max_persons": result.max_persons,
+                "min_persons": result.min_persons,
+                "avg_persons": round(result.avg_persons, 2),
+                "frames_analyzed": len(result.frame_counts)
+            },
+            timeline=timeline,
+            frame_counts=frame_counts,
+            output_video_path=result.output_video_path,
+            output_video_base64=result.output_video_base64
+        )
+        
+        logger.info(f"Person counting completed. Job ID: {job_id}")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Person counting failed: {e}")
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Person counting failed: {str(e)}"
+        )
+
+
+@app.post("/person_count/upload", response_model=PersonCountResponse)
+async def count_persons_from_upload(
+    file: UploadFile = File(..., description="Video file to analyze"),
+    confidence_threshold: float = Form(0.5, description="YOLO detection confidence"),
+    frame_sample_rate: int = Form(1, description="Process every Nth frame"),
+    return_video: bool = Form(True, description="Generate annotated output video"),
+    return_base64: bool = Form(False, description="Return video as base64")
+):
+    """
+    Count persons in uploaded video using YOLO
+    
+    - **file**: Video file (MP4, AVI, MOV, etc.)
+    - **confidence_threshold**: YOLO detection confidence (0.0-1.0)
+    - **frame_sample_rate**: Process every Nth frame (1-30)
+    - **return_video**: Whether to generate annotated output video
+    - **return_base64**: Return video as base64 string
+    
+    Returns:
+    - Person count per frame
+    - Timeline with max/min/avg counts
+    - Annotated video with bounding boxes (optional)
+    """
+    if not YOLO_AVAILABLE or get_yolo_counter is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="YOLO Person Counter is not available. Install with: pip install ultralytics"
+        )
+    
+    temp_video_path = None
+    try:
+        # Validate file type
+        if not file.content_type or not file.content_type.startswith('video/'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File must be a video"
+            )
+        
+        # Save uploaded file to temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
+            temp_video_path = temp_file.name
+            contents = await file.read()
+            temp_file.write(contents)
+            temp_file.flush()
+        
+        logger.info(f"Video uploaded and saved to: {temp_video_path}")
+        
+        # Get YOLO counter
+        counter = get_yolo_counter(confidence_threshold=confidence_threshold)
+        if counter is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to initialize YOLO counter"
+            )
+        
+        # Process video
+        result = counter.process_video(
+            video_path=temp_video_path,
+            output_video=return_video,
+            frame_sample_rate=frame_sample_rate,
+            return_base64=return_base64
+        )
+        
+        # Clean up input video
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        
+        # Build timeline
+        timeline = PersonCountTimeline(
+            timestamps=[fc.timestamp for fc in result.frame_counts],
+            counts=[fc.person_count for fc in result.frame_counts],
+            max_count=result.max_persons,
+            min_count=result.min_persons,
+            avg_count=result.avg_persons,
+            duration=result.duration
+        )
+        
+        # Build frame counts (limit to avoid huge responses)
+        frame_counts = []
+        sample_interval = max(1, len(result.frame_counts) // 100)
+        for i, fc in enumerate(result.frame_counts):
+            if i % sample_interval == 0:
+                detections = []
+                for det in fc.detections:
+                    detections.append(PersonDetectionResult(
+                        person_id=det.person_id,
+                        confidence=det.confidence,
+                        bounding_box=PersonBoundingBox(
+                            x1=det.bbox[0],
+                            y1=det.bbox[1],
+                            x2=det.bbox[2],
+                            y2=det.bbox[3],
+                            center_x=det.center[0],
+                            center_y=det.center[1]
+                        )
+                    ))
+                frame_counts.append(FramePersonCount(
+                    frame_idx=fc.frame_idx,
+                    timestamp=fc.timestamp,
+                    person_count=fc.person_count,
+                    detections=detections
+                ))
+        
+        job_id = f"yolo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        response_data = PersonCountResponse(
+            success=True,
+            job_id=job_id,
+            video_path=file.filename,
+            timestamp=datetime.now().isoformat(),
+            video_info={
+                "total_frames": result.total_frames,
+                "fps": result.fps,
+                "duration": result.duration
+            },
+            statistics={
+                "max_persons": result.max_persons,
+                "min_persons": result.min_persons,
+                "avg_persons": round(result.avg_persons, 2),
+                "frames_analyzed": len(result.frame_counts)
+            },
+            timeline=timeline,
+            frame_counts=frame_counts,
+            output_video_path=result.output_video_path,
+            output_video_base64=result.output_video_base64
+        )
+        
+        logger.info(f"Person counting completed. Job ID: {job_id}")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Person counting upload failed: {e}")
+        if temp_video_path and os.path.exists(temp_video_path):
+            os.unlink(temp_video_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Person counting failed: {str(e)}"
+        )
+
+
+@app.get("/person_count/status")
+async def get_person_count_status():
+    """Get YOLO person counting system status"""
+    return {
+        "yolo_available": YOLO_AVAILABLE,
+        "model_info": {
+            "name": "YOLOv8n (nano)",
+            "type": "Object Detection",
+            "class": "Person (COCO class 0)"
+        } if YOLO_AVAILABLE else None,
+        "supported_formats": ["mp4", "avi", "mov", "mkv", "webm"],
+        "features": {
+            "person_detection": True,
+            "bounding_boxes": True,
+            "confidence_scores": True,
+            "annotated_video_output": True,
+            "base64_video_output": True,
+            "timeline_statistics": True
         }
     }
 
